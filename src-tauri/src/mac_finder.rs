@@ -12,19 +12,21 @@ pub struct FinderBounds {
     pub height: f64,
 }
 
-// Thêm struct này để chứa cả tên app và ID tiến trình
 pub struct ActiveWindow {
     pub app_name: String,
     pub process_id: u64,
+    pub title: String,
     pub bounds: FinderBounds,
 }
 
+// 1. DÙNG ACTIVE_WIN_POS ĐỂ LẤY TOẠ ĐỘ SIÊU NHANH
 #[cfg(target_os = "macos")]
 pub fn get_frontmost_window() -> Option<ActiveWindow> {
     if let Ok(window) = get_active_window() {
         return Some(ActiveWindow {
             app_name: window.app_name,
             process_id: window.process_id,
+            title: window.title,
             bounds: FinderBounds {
                 x: window.position.x,
                 y: window.position.y,
@@ -36,13 +38,17 @@ pub fn get_frontmost_window() -> Option<ActiveWindow> {
     None
 }
 
+// 2. DÙNG APPLESCRIPT ĐỂ CHECK XEM CÓ PHẢI INFO/TRASH KHÔNG (VÀ LẤY PATH)
 #[cfg(target_os = "macos")]
-pub fn get_finder_path() -> Option<String> {
+pub fn get_valid_finder_path() -> Option<String> {
     let script_src = "
         tell application \"Finder\"
             if (count of windows) = 0 then return \"\"
+            if (class of window 1 is not finder window) then return \"\"
             try
-                return POSIX path of (target of window 1 as alias)
+                set p to POSIX path of (target of window 1 as alias)
+                if p contains \".Trash\" then return \"\"
+                return p
             on error
                 return \"\"
             end try
@@ -76,8 +82,3 @@ pub fn get_finder_path() -> Option<String> {
         res
     }
 }
-
-#[cfg(not(target_os = "macos"))]
-pub fn get_frontmost_window() -> Option<ActiveWindow> { None }
-#[cfg(not(target_os = "macos"))]
-pub fn get_finder_path() -> Option<String> { None }

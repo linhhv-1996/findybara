@@ -11,13 +11,14 @@ mod mac_finder;
 mod stats;
 mod config;
 
-use mac_finder::{get_frontmost_window, get_valid_finder_path, FinderBounds};
+use mac_finder::{get_frontmost_window, get_finder_state_paths, FinderBounds};
 
-// 1. Tạo State để lưu trạng thái "Công tắc tổng"
+// State để lưu trạng thái "Công tắc tổng" của ứng dụng
 struct AppState {
     is_enabled: AtomicBool,
 }
 
+// Cập nhật vị trí cửa sổ dựa trên toạ độ của Finder
 fn update_window_pos_with_bounds<R: Runtime>(window: &tauri::WebviewWindow<R>, bounds: &FinderBounds) {
     let ui_height = 72.0;
     let mut target_y = bounds.y + bounds.height;
@@ -34,21 +35,21 @@ fn update_window_pos_with_bounds<R: Runtime>(window: &tauri::WebviewWindow<R>, b
 
 #[tauri::command]
 fn show_findybara(app: AppHandle) {
-    // Gạt công tắc BẬT
+    // Bật công tắc hoạt động
     let state = app.state::<AppState>();
     state.is_enabled.store(true, Ordering::Relaxed);
 
     std::thread::spawn(move || {
-        let path_opt = get_valid_finder_path();
+        let paths_opt = get_finder_state_paths(); // Lấy danh sách selection hoặc target path
         let app_clone = app.clone();
         
         let _ = app.run_on_main_thread(move || {
             if let Some(window) = app_clone.get_webview_window("main") {
                 if let Some(win) = get_frontmost_window() {
                     if win.app_name == "Finder" && win.bounds.width >= 300.0 && win.bounds.height >= 200.0 {
-                        if let Some(path) = path_opt {
+                        if let Some(paths) = paths_opt {
                             update_window_pos_with_bounds(&window, &win.bounds);
-                            stats::spawn_analyze_and_emit(window.clone(), path);
+                            stats::spawn_analyze_and_emit(window.clone(), paths);
                             let _ = window.show();
                             let _ = window.set_focus(); 
                             let _ = window.set_always_on_top(true);
@@ -62,13 +63,15 @@ fn show_findybara(app: AppHandle) {
 
 #[tauri::command]
 fn hide_findybara(app: AppHandle) {
-    // Gạt công tắc TẮT (User chủ động tắt)
+    // Tắt công tắc hoạt động (ngừng tracking)
     let state = app.state::<AppState>();
     state.is_enabled.store(false, Ordering::Relaxed);
 
     let app_clone = app.clone();
     let _ = app.run_on_main_thread(move || {
-        if let Some(window) = app_clone.get_webview_window("main") { let _ = window.hide(); }
+        if let Some(window) = app_clone.get_webview_window("main") { 
+            let _ = window.hide(); 
+        }
     });
 }
 
@@ -85,11 +88,10 @@ pub fn run() {
                     if let Some(window) = app.get_webview_window("main") {
                         let is_visible = window.is_visible().unwrap_or(false);
                         
-                        // LOGIC TOGGLE: Nếu đang bật và đang hiện UI -> Chuyển thành Tắt
+                        // Toggle logic: Nếu đang bật và hiện -> Tắt, ngược lại -> Bật
                         if is_enabled && is_visible {
                             hide_findybara(app.clone());
                         } else {
-                            // Nếu đang tắt hoặc UI đang ẩn -> Bật lại
                             show_findybara(app.clone());
                         }
                     }
@@ -99,7 +101,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            // Khởi tạo công tắc tổng: Mặc định vừa mở app là Bật
+            // Khởi tạo state: Mặc định bật khi mở app
             app.manage(AppState {
                 is_enabled: AtomicBool::new(true),
             });
@@ -116,9 +118,7 @@ pub fn run() {
                 .on_menu_event(|app, event| { if event.id == "quit" { app.exit(0); } })
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
-                        // FIX Ở ĐÂY: Lấy AppHandle chuẩn từ tray ra để xài, không xài app ngoài nữa
                         let app_handle = tray.app_handle(); 
-                        
                         let state = app_handle.state::<AppState>();
                         let is_enabled = state.is_enabled.load(Ordering::Relaxed);
                         
@@ -135,18 +135,19 @@ pub fn run() {
                 
             let app_handle = app.handle().clone();
 
+            // Luồng kiểm tra Finder ngay khi khởi động
             {
                 let app_startup = app_handle.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_millis(300));
-                    if let Some(path) = get_valid_finder_path() {
+                    if let Some(paths) = get_finder_state_paths() {
                         if let Some(win) = get_frontmost_window() {
                             if win.app_name == "Finder" && win.bounds.width >= 300.0 && win.bounds.height >= 200.0 {
                                 let bounds = win.bounds.clone();
                                 if let Some(window) = app_startup.get_webview_window("main") {
                                     let _ = app_startup.run_on_main_thread(move || {
                                         update_window_pos_with_bounds(&window, &bounds);
-                                        stats::spawn_analyze_and_emit(window.clone(), path);
+                                        stats::spawn_analyze_and_emit(window.clone(), paths);
                                         let _ = window.show();
                                         let _ = window.set_always_on_top(true);
                                     });
@@ -157,8 +158,9 @@ pub fn run() {
                 });
             }
 
+            // VÒNG LẶP TRACKING CHÍNH (60fps cho toạ độ, 500ms cho Path/Selection)
             std::thread::spawn(move || {
-                let mut last_path = String::new();
+                let mut last_paths: Vec<String> = vec![];
                 let mut last_bounds = FinderBounds { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
                 let mut last_title = String::new(); 
                 let mut is_valid_finder = false;
@@ -166,27 +168,22 @@ pub fn run() {
                 let my_pid = std::process::id() as u64;
 
                 loop {
-                    std::thread::sleep(Duration::from_millis(16)); // 60fps tracking
+                    std::thread::sleep(Duration::from_millis(16)); 
 
                     if let Some(window) = app_handle.get_webview_window("main") {
                         
-                        // TÔN TRỌNG QUYẾT ĐỊNH CỦA USER: Nếu đã tắt thì DỪNG MỌI HOẠT ĐỘNG
                         let is_enabled = app_handle.state::<AppState>().is_enabled.load(Ordering::Relaxed);
                         if !is_enabled {
                             if window.is_visible().unwrap_or(false) {
                                 let w = window.clone();
                                 let _ = app_handle.run_on_main_thread(move || { let _ = w.hide(); });
                             }
-                            // Reset lại data để khi bật lại nó tính mới
-                            last_path.clear();
+                            last_paths.clear();
                             last_title.clear();
                             last_bounds = FinderBounds { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
-                            continue; // Bỏ qua đoạn dưới
+                            continue;
                         }
 
-                        // ==========================================
-                        // Logic chạy khi ĐANG BẬT
-                        // ==========================================
                         let win_opt = get_frontmost_window();
                         let time_to_check = last_path_check.elapsed() >= Duration::from_millis(500);
                         let mut title_changed = false;
@@ -200,14 +197,15 @@ pub fn run() {
                             }
                         }
 
+                        // Cập nhật dữ liệu file khi Title đổi hoặc sau mỗi 500ms
                         if time_to_check || title_changed {
                             last_path_check = Instant::now();
 
-                            if let Some(path) = get_valid_finder_path() {
+                            if let Some(paths) = get_finder_state_paths() {
                                 is_valid_finder = true;
-                                if path != last_path {
-                                    stats::spawn_analyze_and_emit(window.clone(), path.clone());
-                                    last_path = path;
+                                if paths != last_paths {
+                                    stats::spawn_analyze_and_emit(window.clone(), paths.clone());
+                                    last_paths = paths;
                                 }
                                 
                                 if !window.is_visible().unwrap_or(false) {
@@ -221,6 +219,7 @@ pub fn run() {
                             }
                         }
 
+                        // Cập nhật vị trí cửa sổ theo Finder (real-time)
                         if let Some(win) = win_opt {
                             if win.process_id == my_pid { continue; }
 

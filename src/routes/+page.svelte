@@ -46,6 +46,8 @@
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="2.5"/><path d="M8 1.5v1.2M8 13.3v1.2M1.5 8h1.2M13.3 8h1.2M3.6 3.6l.85.85M11.55 11.55l.85.85M3.6 12.4l.85-.85M11.55 4.45l.85-.85"/></svg>
           {:else if ctx === "folder"}
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 5A1 1 0 012.5 4h3.086a1 1 0 01.707.293L7.207 5.2A1 1 0 007.914 5.5H13.5a1 1 0 011 1v5.5a1 1 0 01-1 1h-11a1 1 0 01-1-1V5z"/></svg>
+          {:else if ctx === "multi"}
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h8v8H4z"/><path d="M6 2h8v8"/><path d="M2 6h8v8H2z"/></svg>
           {:else}
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="6"/></svg>
           {/if}
@@ -56,9 +58,17 @@
     <div class="content">
       {#if info}
         <div class="file-info" in:fly={{x:-12, duration:300, easing:cubicOut}}>
-          <span class="fname">{info.name}<span class="fext">.{info.ext.toLowerCase()}</span></span>
+          <span class="fname">
+            {#if ctx === "multi"}
+              {info.name}
+            {:else if ctx === "file"}
+              1 item selected
+            {:else if ctx === "folder"}
+              {info.name} {/if}
+          </span>
           <span class="fmeta">{info.meta}</span>
         </div>
+
         <div class="sep" in:fade={{duration:200, delay:100}}></div>
         <div class="actions" in:fly={{x:20, duration:400, delay:150, easing:cubicOut}}>
           {#each info.actions as action}

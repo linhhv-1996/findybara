@@ -19,7 +19,6 @@ pub struct ActiveWindow {
     pub bounds: FinderBounds,
 }
 
-// 1. DÙNG ACTIVE_WIN_POS ĐỂ LẤY TOẠ ĐỘ SIÊU NHANH
 #[cfg(target_os = "macos")]
 pub fn get_frontmost_window() -> Option<ActiveWindow> {
     if let Ok(window) = get_active_window() {
@@ -38,20 +37,31 @@ pub fn get_frontmost_window() -> Option<ActiveWindow> {
     None
 }
 
-// 2. DÙNG APPLESCRIPT ĐỂ CHECK XEM CÓ PHẢI INFO/TRASH KHÔNG (VÀ LẤY PATH)
+// Đổi tên hàm và trả về Option<Vec<String>>
 #[cfg(target_os = "macos")]
-pub fn get_valid_finder_path() -> Option<String> {
+pub fn get_finder_state_paths() -> Option<Vec<String>> {
+    // AppleScript mới: Ưu tiên lấy Selection, nếu không có mới lấy Target
     let script_src = "
         tell application \"Finder\"
             if (count of windows) = 0 then return \"\"
             if (class of window 1 is not finder window) then return \"\"
-            try
-                set p to POSIX path of (target of window 1 as alias)
-                if p contains \".Trash\" then return \"\"
-                return p
-            on error
-                return \"\"
-            end try
+            
+            set sel to selection
+            if (count of sel) > 0 then
+                set pathList to \"\"
+                repeat with i from 1 to count of sel
+                    set pathList to pathList & POSIX path of (item i of sel as alias) & \"\\n\"
+                end repeat
+                return pathList
+            else
+                try
+                    set p to POSIX path of (target of window 1 as alias)
+                    if p contains \".Trash\" then return \"\"
+                    return p
+                on error
+                    return \"\"
+                end try
+            end if
         end tell
     ";
 
@@ -73,8 +83,15 @@ pub fn get_valid_finder_path() -> Option<String> {
             if !res_string.is_null() {
                 let utf8: *const c_char = msg_send![res_string, UTF8String];
                 let s = CStr::from_ptr(utf8).to_string_lossy().to_string();
-                if !s.is_empty() {
-                    res = Some(s);
+                
+                // Tách chuỗi thành mảng các đường dẫn
+                let paths: Vec<String> = s.lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                    
+                if !paths.is_empty() {
+                    res = Some(paths);
                 }
             }
         }

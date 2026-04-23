@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 use serde::Serialize;
-use walkdir::WalkDir;
+use walkdir::{DirEntry, WalkDir};
 use tauri::{Emitter, Runtime, WebviewWindow};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use crate::config;
@@ -23,6 +23,14 @@ pub struct CtxData {
     pub actions: Vec<String>,
 }
 
+// Hàm check file/folder ẩn (bắt đầu bằng dấu ".")
+fn is_hidden(entry: &DirEntry) -> bool {
+    entry.file_name()
+         .to_str()
+         .map(|s| s.starts_with('.'))
+         .unwrap_or(false)
+}
+
 // Nhận Vec<String> thay vì String
 pub fn spawn_analyze_and_emit<R: Runtime>(window: WebviewWindow<R>, paths: Vec<String>) {
     if paths.is_empty() {
@@ -41,6 +49,7 @@ pub fn spawn_analyze_and_emit<R: Runtime>(window: WebviewWindow<R>, paths: Vec<S
         let cfg = config::get_config(&path_str, is_dir);
 
         if !is_dir {
+            // Kiểm tra xem chính file đang chọn có phải là file ẩn không (tùy chọn)
             let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
             let state = FinderState {
                 ctx: "file".into(),
@@ -64,11 +73,25 @@ pub fn spawn_analyze_and_emit<R: Runtime>(window: WebviewWindow<R>, paths: Vec<S
 
         std::thread::spawn(move || {
             let mut file_count = 0; let mut dir_count = 0; let mut total_size: u64 = 0;
-            for entry in WalkDir::new(&path_str).min_depth(1).into_iter().filter_map(|e| e.ok()) {
+            
+            // Dùng filter_entry để loại bỏ file/folder ẩn ngay từ đầu
+            let walker = WalkDir::new(&path_str)
+                .min_depth(1)
+                .into_iter()
+                .filter_entry(|e| !is_hidden(e))
+                .filter_map(|e| e.ok());
+
+            for entry in walker {
                 if CURRENT_TASK.load(Ordering::Relaxed) != task_id { return; }
+                
                 if let Ok(meta) = entry.metadata() {
-                    if meta.is_file() { total_size += meta.len(); file_count += 1; } 
-                    else if meta.is_dir() { dir_count += 1; }
+                    if meta.is_file() { 
+                        total_size += meta.len(); 
+                        if entry.depth() == 1 { file_count += 1; }
+                    } 
+                    else if meta.is_dir() && entry.depth() == 1 { 
+                        dir_count += 1; 
+                    }
                 }
             }
             if CURRENT_TASK.load(Ordering::SeqCst) == task_id {
@@ -104,10 +127,18 @@ pub fn spawn_analyze_and_emit<R: Runtime>(window: WebviewWindow<R>, paths: Vec<S
                 if CURRENT_TASK.load(Ordering::Relaxed) != task_id { return; }
                 let path = Path::new(&path_str);
                 
+                // Nếu bản thân path đang được chọn là ẩn thì có muốn tính không? 
+                // Ở đây mình vẫn tính nếu người dùng CỐ TÌNH bôi đen file ẩn đó.
                 if path.is_file() {
                     total_size += fs::metadata(path).map(|m| m.len()).unwrap_or(0);
                 } else if path.is_dir() {
-                    for entry in WalkDir::new(&path_str).min_depth(1).into_iter().filter_map(|e| e.ok()) {
+                    let walker = WalkDir::new(&path_str)
+                        .min_depth(1)
+                        .into_iter()
+                        .filter_entry(|e| !is_hidden(e))
+                        .filter_map(|e| e.ok());
+
+                    for entry in walker {
                         if CURRENT_TASK.load(Ordering::Relaxed) != task_id { return; }
                         if let Ok(meta) = entry.metadata() {
                             if meta.is_file() { total_size += meta.len(); }

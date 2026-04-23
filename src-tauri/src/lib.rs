@@ -20,7 +20,7 @@ struct AppState {
 
 // Cập nhật vị trí cửa sổ dựa trên toạ độ của Finder
 fn update_window_pos_with_bounds<R: Runtime>(window: &tauri::WebviewWindow<R>, bounds: &FinderBounds) {
-    let ui_height = 72.0;
+    let ui_height = 42.0;
     let mut target_y = bounds.y + bounds.height;
 
     if let Ok(Some(monitor)) = window.current_monitor() {
@@ -29,9 +29,19 @@ fn update_window_pos_with_bounds<R: Runtime>(window: &tauri::WebviewWindow<R>, b
         if target_y + ui_height > screen_bottom { target_y = screen_bottom - ui_height; }
     }
 
-    let _ = window.set_size(tauri::Size::Logical(LogicalSize::new(bounds.width, ui_height)));
-    let _ = window.set_position(tauri::Position::Logical(LogicalPosition::new(bounds.x, target_y)));
+    let window_width = bounds.width.max(380.0);
+
+    // NÂNG CẤP (Tuỳ chọn): Nếu cửa sổ Tauri rộng hơn Finder, hãy căn giữa nó so với Finder
+    let mut target_x = bounds.x;
+    if window_width > bounds.width {
+        target_x = bounds.x - (window_width - bounds.width) / 2.0;
+    }
+
+    // LỖI Ở 2 DÒNG NÀY: Thay bounds.width thành window_width, và bounds.x thành target_x
+    let _ = window.set_size(tauri::Size::Logical(LogicalSize::new(window_width, ui_height)));
+    let _ = window.set_position(tauri::Position::Logical(LogicalPosition::new(target_x, target_y)));
 }
+
 
 #[tauri::command]
 fn show_findybara(app: AppHandle) {

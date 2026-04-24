@@ -1,6 +1,6 @@
 use active_win_pos_rs::get_active_window;
-use objc::{class, msg_send, sel, sel_impl};
 use objc::runtime::Object;
+use objc::{class, msg_send, sel, sel_impl};
 use std::ffi::CStr;
 use std::os::raw::c_char;
 
@@ -31,7 +31,7 @@ pub fn get_frontmost_window() -> Option<ActiveWindow> {
                 y: window.position.y,
                 width: window.position.width,
                 height: window.position.height,
-            }
+            },
         });
     }
     None
@@ -75,7 +75,8 @@ pub fn get_finder_state_paths() -> Option<Vec<String>> {
         let apple_script: *mut Object = msg_send![apple_script, initWithSource:script_ns];
 
         let mut error: *mut Object = std::ptr::null_mut();
-        let result_descriptor: *mut Object = msg_send![apple_script, executeAndReturnError:&mut error];
+        let result_descriptor: *mut Object =
+            msg_send![apple_script, executeAndReturnError:&mut error];
 
         let mut res = None;
         if !result_descriptor.is_null() {
@@ -83,13 +84,14 @@ pub fn get_finder_state_paths() -> Option<Vec<String>> {
             if !res_string.is_null() {
                 let utf8: *const c_char = msg_send![res_string, UTF8String];
                 let s = CStr::from_ptr(utf8).to_string_lossy().to_string();
-                
+
                 // Tách chuỗi thành mảng các đường dẫn
-                let paths: Vec<String> = s.lines()
+                let paths: Vec<String> = s
+                    .lines()
                     .map(|l| l.trim().to_string())
                     .filter(|l| !l.is_empty())
                     .collect();
-                    
+
                 if !paths.is_empty() {
                     res = Some(paths);
                 }

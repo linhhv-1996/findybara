@@ -1,234 +1,263 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
-  import { fly } from "svelte/transition";
-  import { cubicOut } from "svelte/easing";
+  import { fade, slide } from "svelte/transition";
   import { onMount } from "svelte";
 
   type CtxData = {
-    name: string;
-    ext: string;
-    meta: string;
-    color: string;
-    actions: string[]; // Tạm thời không dùng đến
+    name: string; ext: string; meta: string;
+    color: string; actions: string[]; path: string;
+    folder_summary: string;
   };
 
-  let ctx = $state<"none" | "file" | "folder" | "multi">("none");
   let info = $state<CtxData | null>(null);
-  let accent = $derived(info?.color ?? "#888888");
+  let query = $state("");
+  let isThinking = $state(false);
+  let aiAnswer = $state("");
+  
+  let barElement: HTMLDivElement | undefined = $state();
 
-  // Tên hiển thị ngắn gọn
-let displayTitle = $derived.by(() => {
-    if (!info) return "";
-    
-    // Nếu là chọn nhiều, backend đã trả về sẵn "X items selected"
-    if (ctx === "multi") return info.name; 
-    
-    // Nếu là folder (dù là đang đứng trong đó hay được chọn), hiện tên folder ra
-    if (ctx === "folder") return info.name; 
-    
-    // Nếu là file, vẫn giấu tên thật (nếu bạn vẫn muốn giữ rule cũ)
-    // Hoặc bạn có thể đổi thành `return info.name;` để hiện luôn tên file
-    if (ctx === "file") return "1 file selected"; 
-    
-    return info.name;
+  // Dùng màu accent làm điểm nhấn, nếu không có thì dùng màu tím hiện đại
+  let accent = $derived(info?.color ?? "#a855f7");
+  let filteredActions = $derived.by(() => {
+    if (!info || !query) return info?.actions ?? [];
+    return info.actions.filter(a => a.toLowerCase().includes(query.toLowerCase()));
+  });
+
+  $effect(() => {
+    if (!barElement) return;
+    const observer = new ResizeObserver((entries) => {
+      for (let entry of entries) {
+        const actualHeight = entry.target.getBoundingClientRect().height;
+        invoke("set_ui_height", { height: Math.ceil(actualHeight + 24) });
+      }
+    });
+    observer.observe(barElement);
+    return () => observer.disconnect();
   });
 
   onMount(() => {
-    let unlisten: (() => void) | undefined;
-    listen<{ ctx: string; data: CtxData | null }>("finder-state", (event) => {
-      ctx = event.payload.ctx as any;
-      info = event.payload.data;
-    }).then((f) => (unlisten = f));
-
-    return () => unlisten && unlisten();
+    listen<{ data: CtxData | null }>("finder-state", (e) => {
+      info = e.payload.data;
+      aiAnswer = ""; query = "";
+    });
   });
 
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      invoke("hide_findybara");
+  async function handleKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape") { invoke("hide_findybara"); aiAnswer = ""; }
+    if (e.key === "Enter" && query) {
+      if (filteredActions.length > 0) {
+        invoke("run_action", { action: filteredActions[0] });
+        query = "";
+      } else {
+        isThinking = true; aiAnswer = "";
+        try {
+          aiAnswer = await invoke("ask_ai", { 
+            query, path: info?.path ?? "", ctxName: info?.name ?? "", folderSummary: info?.folder_summary ?? "" 
+          });
+        } catch (err) { aiAnswer = "Error: " + err; }
+        finally { isThinking = false; query = ""; }
+      }
     }
-  }
-
-  function getContextIcon() {
-    if (ctx === "folder") {
-      return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>`;
-    }
-    if (ctx === "multi") {
-      return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6"/><path d="M9 15h6"/></svg>`;
-    }
-    return `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`;
   }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="root" style="--accent: {accent}">
-  <div class="bar" class:has-info={!!info}>
-    <div class="shimmer"></div>
-
-    <div class="main-row">
-      <div class="icon-box" class:lit={!!info}>
-        {@html getContextIcon()}
+  {#if info}
+    <div class="command-bar" bind:this={barElement} transition:slide={{ duration: 250, easing: (t) => t * (2 - t) }}>
+      
+      <div class="context-header">
+        <div class="context-badge">
+          <span class="icon">{info.ext === "DIR" ? "📂" : (info.ext === "MULTI" ? "📦" : "📄")}</span>
+          <span class="name">{info.name}</span>
+          {#if info.meta}
+            <span class="divider">/</span>
+            <span class="meta">{info.meta}</span>
+          {/if}
+        </div>
+        <button class="close-btn" onclick={() => { invoke("hide_findybara"); aiAnswer = ""; }} title="Close (Esc)">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
       </div>
 
-      <div class="content">
-        {#if info}
-          <div class="file-info" in:fly={{ x: -8, duration: 220, easing: cubicOut }}>
-            <span class="title">{displayTitle}</span>
-            <span class="dot">•</span>
-            <span class="ext-badge">{info.ext}</span>
-            <span class="meta">{info.meta}</span>
+      <div class="input-row">
+        <div class="prompt-icon">✨</div>
+        <input 
+          bind:value={query} 
+          placeholder="Ask anything or type a command..." 
+          autofocus 
+          spellcheck="false"
+        />
+        
+        {#if query && filteredActions.length > 0}
+          <div class="action-hint" in:fade={{duration: 150}}>
+            <span>{filteredActions[0]}</span>
+            <kbd>↵</kbd>
           </div>
-        {:else}
-          <div class="hint">Findybara • Chọn item trong Finder</div>
         {/if}
       </div>
 
-      <button class="close-btn" onclick={() => invoke("hide_findybara")}>✕</button>
+      {#if isThinking || aiAnswer}
+        <div class="ai-wrapper" transition:slide={{ duration: 300 }}>
+          <div class="ai-separator"></div>
+          <div class="ai-section">
+            {#if isThinking}
+              <div class="loading-dots"><span></span><span></span><span></span></div>
+            {:else}
+              <div class="ai-content">{aiAnswer}</div>
+            {/if}
+          </div>
+        </div>
+      {/if}
     </div>
-  </div>
+  {/if}
 </div>
 
 <style>
-  :global(body) {
-    background: transparent !important;
-    overflow: hidden;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    margin: 0;
-    padding: 0;
+  :global(html, body) { 
+    background: transparent !important; 
+    margin: 0; padding: 0;
+    overflow: hidden !important; 
+    overscroll-behavior: none; 
+    -webkit-user-select: none; 
+    user-select: none;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto, Helvetica, Arial, sans-serif; 
   }
 
-  .root {
-    width: 100vw;
-    height: 100vh;
-    display: flex;
-    justify-content: center;
-    align-items: center; /* Giữ thanh này ở chính giữa cửa sổ Tauri */
-    pointer-events: none;
+  input, .ai-content {
+    -webkit-user-select: text; 
+    user-select: text;
+  }
+  
+  .root { 
+    width: 100%; height: 100%; 
+    display: flex; justify-content: center; align-items: flex-start; 
+    pointer-events: none; 
   }
 
-  .bar {
+  /* KHUNG MAIN: GLASSMORPHISM CHUẨN MAC */
+  .command-bar { 
+    width: 540px;
+    margin-top: 5px;
+    background: rgba(28, 28, 33, 0.95); /* Trong suốt hơn */
+    backdrop-filter: blur(40px) saturate(180%);
+    -webkit-backdrop-filter: blur(40px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 16px;
     pointer-events: auto;
-    background: rgba(28, 28, 35, 0.95);
-    backdrop-filter: blur(32px) saturate(180%);
-    border: 1px solid rgba(255,255,255,0.13);
-    border-radius: 999px; /* Tròn hẳn hai đầu kiểu viên thuốc */
     overflow: hidden;
-    position: relative;
-    padding: 0 6px;
-    height: 36px;
-    /* min-width: 350px; */
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex; flex-direction: column;
   }
 
-  .shimmer {
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--accent), transparent);
-    opacity: 0.4;
-    animation: shimmer 3s linear infinite;
-  }
-  @keyframes shimmer {
-    from { transform: translateX(-150%); }
-    to { transform: translateX(300%); }
+  /* --- TẦNG 1: HEADER --- */
+  .context-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 16px 2px 16px;
   }
 
-  .main-row {
-    display: flex;
-    align-items: center;
-    height: 100%;
-    gap: 8px;
-  }
-
-  .icon-box {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background: rgba(255,255,255,0.08);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: #aaa;
-    flex-shrink: 0;
-  }
-  .icon-box.lit {
-    background: color-mix(in srgb, var(--accent) 22%, transparent);
-    color: var(--accent);
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 30%, transparent);
-  }
-
-  .content {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-  }
-
-  /* Dàn ngang toàn bộ text */
-  .file-info {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 6px;
-    min-width: 0;
-  }
-
-  .title {
-    font-size: 13px;
-    font-weight: 500;
-    color: #fff;
-    white-space: nowrap;
-
-    white-space: nowrap;       /* Cấm xuống dòng */
-    overflow: hidden;          /* Giấu phần text bị tràn */
-    text-overflow: ellipsis;   /* Biến phần tràn thành dấu ... */
-    flex-shrink: 1;
-  }
-
-  .dot {
-    color: rgba(255,255,255,0.3);
-    font-size: 10px;
-  }
-
-  .ext-badge {
-    background: rgba(255,255,255,0.15);
-    padding: 2px 6px;
-    border-radius: 6px;
-    font-size: 10px;
-    font-weight: 600;
-    color: #eee;
-    letter-spacing: 0.2px;
-  }
-
-  .meta {
+  .context-badge {
+    display: flex; align-items: center; gap: 6px;
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    padding: 4px 10px;
+    border-radius: 8px;
     font-size: 12px;
-    color: rgba(255,255,255,0.6);
-    white-space: nowrap;
-    flex-shrink: 0;
   }
 
-  .hint {
-    color: rgba(255,255,255,0.48);
-    font-size: 12.5px;
+  .context-badge .icon { font-size: 12px; }
+  .context-badge .name { 
+    font-weight: 600; color: #f1f5f9;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; 
+    max-width: 200px;
   }
+  .context-badge .divider { color: rgba(255,255,255,0.2); font-weight: 300; }
+  .context-badge .meta { color: #94a3b8; font-weight: 500; }
 
   .close-btn {
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background: transparent;
-    border: none;
-    color: rgba(255,255,255,0.4);
-    font-size: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
+    background: rgba(255, 255, 255, 0.05); 
+    border: 1px solid rgba(255, 255, 255, 0.05); 
+    color: #94a3b8; 
+    cursor: pointer; 
+    width: 24px; height: 24px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.2s ease;
   }
-  .close-btn:hover {
-    background: rgba(255,255,255,0.12);
-    color: #fff;
+  .close-btn:hover { background: rgba(255, 255, 255, 0.1); color: white; transform: scale(1.05); }
+
+  /* --- TẦNG 2: INPUT --- */
+  .input-row {
+    display: flex; align-items: center;
+    padding: 12px 16px 16px 16px;
+    gap: 12px;
   }
+
+  .prompt-icon { 
+    font-size: 15px; 
+    background: linear-gradient(135deg, #a855f7, #ec4899);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 2px 4px rgba(168, 85, 247, 0.4));
+  }
+
+  input { 
+    flex: 1; background: none; border: none; color: white; 
+    font-size: 13px; /* Chữ to gõ sướng hơn */
+    font-weight: 400; outline: none; min-width: 0;
+  }
+  input::placeholder { color: #64748b; font-weight: 400; }
+
+  /* Nút Action Hint chuẩn UI mới */
+  .action-hint {
+    background: linear-gradient(180deg, rgba(255,255,255,0.1), rgba(255,255,255,0.05));
+    border: 1px solid rgba(255,255,255,0.1);
+    padding: 6px 10px; 
+    border-radius: 8px;
+    font-size: 12px; font-weight: 500; color: #f8fafc;
+    display: flex; align-items: center; gap: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  }
+  .action-hint kbd { 
+    background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.1);
+    padding: 2px 6px; border-radius: 4px; font-family: monospace; font-size: 11px; color: #cbd5e1;
+  }
+
+  /* --- TẦNG 3: AI SECTION --- */
+  .ai-separator {
+    height: 1px; width: 100%;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  }
+
+  .ai-section {
+    padding: 16px; 
+    background: rgba(0, 0, 0, 0.15); /* Làm tối nền AI một chút cho nổi chữ */
+    max-height: 150px; overflow-y: auto;
+  }
+
+  .ai-content { 
+    color: #cbd5e1; font-size: 13px; line-height: 1.6; 
+    white-space: pre-wrap; font-weight: 400;
+  }
+
+  /* Loading ngầu hơn */
+  .loading-dots { display: flex; gap: 6px; padding: 4px 0; align-items: center; height: 22px; }
+  .loading-dots span { 
+    width: 6px; height: 6px; background: #a855f7; border-radius: 50%; 
+    animation: bounce 1s infinite alternate;
+    box-shadow: 0 0 8px rgba(168, 85, 247, 0.6);
+  }
+  .loading-dots span:nth-child(2) { animation-delay: 0.2s; }
+  .loading-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+  @keyframes bounce { 
+    from { transform: translateY(0); opacity: 0.6; } 
+    to { transform: translateY(-4px); opacity: 1; } 
+  }
+  
+  /* Thanh cuộn tàng hình thanh lịch */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.2); border-radius: 10px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.3); }
 </style>

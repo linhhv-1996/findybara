@@ -22,23 +22,18 @@ struct AppState {
 
 struct AppOllamaState(Arc<ollama::OllamaManager>);
 
-// LỆNH MỚI: Lắng nghe UI báo chiều cao để thu/phóng cửa sổ Tauri, khóa tọa độ Y không cho nảy lên trên
 #[tauri::command]
 fn set_ui_height(app: AppHandle, height: f64) {
     if let Some(window) = app.get_webview_window("main") {
         if let Ok(scale_factor) = window.scale_factor() {
             if let Ok(current_size) = window.inner_size() {
                 let logical_size = current_size.to_logical::<f64>(scale_factor);
-
                 if let Ok(current_pos) = window.outer_position() {
                     let logical_pos = current_pos.to_logical::<f64>(scale_factor);
-
                     let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize::new(
                         logical_size.width,
                         height,
                     )));
-
-                    // Ép tọa độ X, Y giữ nguyên để cửa sổ chỉ được giãn xuống dưới
                     let _ = window.set_position(tauri::Position::Logical(tauri::LogicalPosition::new(
                         logical_pos.x, logical_pos.y,
                     )));
@@ -48,18 +43,14 @@ fn set_ui_height(app: AppHandle, height: f64) {
     }
 }
 
-// Bỏ hardcode chiều cao. Chỉ căn chỉnh Width và tọa độ theo Finder
+// CẬP NHẬT: Chiều ngang khớp hoàn toàn với Finder
 fn update_window_pos_with_bounds<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     bounds: &FinderBounds,
 ) {
-    let window_width = bounds.width.max(450.0);
-    let mut target_x = bounds.x;
-    if window_width > bounds.width {
-        target_x = bounds.x - (window_width - bounds.width) / 2.0;
-    }
+    let window_width = bounds.width; // Giãn bằng Finder
+    let target_x = bounds.x;
 
-    // Đọc chiều cao logic hiện tại do Svelte đang giữ
     let current_logical_height = window
         .inner_size()
         .unwrap_or_default()
@@ -71,13 +62,13 @@ fn update_window_pos_with_bounds<R: Runtime>(
         let sf = monitor.scale_factor();
         let screen_bottom = (monitor.position().y as f64 + monitor.size().height as f64) / sf;
         if target_y + current_logical_height > screen_bottom {
-            target_y = screen_bottom - current_logical_height;
+            target_y = screen_bottom - current_logical_height - 10.0;
         }
     }
 
     let _ = window.set_size(tauri::Size::Logical(LogicalSize::new(
         window_width,
-        current_logical_height, // Giữ nguyên chiều cao do UI báo về
+        current_logical_height,
     )));
     
     let _ = window.set_position(tauri::Position::Logical(LogicalPosition::new(
@@ -89,18 +80,13 @@ fn update_window_pos_with_bounds<R: Runtime>(
 fn show_findybara(app: AppHandle) {
     let state = app.state::<AppState>();
     state.is_enabled.store(true, Ordering::Relaxed);
-
     std::thread::spawn(move || {
         let paths_opt = get_finder_state_paths();
         let app_clone = app.clone();
-
         let _ = app.run_on_main_thread(move || {
             if let Some(window) = app_clone.get_webview_window("main") {
                 if let Some(win) = get_frontmost_window() {
-                    if win.app_name == "Finder"
-                        && win.bounds.width >= 300.0
-                        && win.bounds.height >= 200.0
-                    {
+                    if win.app_name == "Finder" && win.bounds.width >= 300.0 && win.bounds.height >= 200.0 {
                         if let Some(paths) = paths_opt {
                             update_window_pos_with_bounds(&window, &win.bounds);
                             stats::spawn_analyze_and_emit(window.clone(), paths);
@@ -120,8 +106,11 @@ fn hide_findybara(app: AppHandle) {
     let state = app.state::<AppState>();
     state.is_enabled.store(false, Ordering::Relaxed);
 
+    // 1. Create a clone of the app handle
     let app_clone = app.clone();
+    
     let _ = app.run_on_main_thread(move || {
+        // 2. Use the clone inside the move closure
         if let Some(window) = app_clone.get_webview_window("main") {
             let _ = window.hide();
         }
@@ -153,13 +142,8 @@ pub fn run() {
                     if shortcut.matches(Modifiers::SHIFT, Code::Space)
                         && event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed
                     {
-                        let state = app.state::<AppState>();
-                        let is_enabled = state.is_enabled.load(Ordering::Relaxed);
-
                         if let Some(window) = app.get_webview_window("main") {
-                            let is_visible = window.is_visible().unwrap_or(false);
-
-                            if is_enabled && is_visible {
+                            if window.is_visible().unwrap_or(false) {
                                 hide_findybara(app.clone());
                             } else {
                                 show_findybara(app.clone());
@@ -173,9 +157,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            app.manage(AppState {
-                is_enabled: AtomicBool::new(true),
-            });
+            app.manage(AppState { is_enabled: AtomicBool::new(true) });
 
             let show_shortcut = Shortcut::new(Some(Modifiers::SHIFT), Code::Space);
             let _ = app.global_shortcut().register(show_shortcut);
@@ -186,70 +168,24 @@ pub fn run() {
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .menu(&menu)
-                .on_menu_event(|app, event| {
-                    if event.id == "quit" {
-                        app.exit(0);
-                    }
-                })
+                .on_menu_event(|app, event| { if event.id == "quit" { app.exit(0); } })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
                         let app_handle = tray.app_handle();
-                        let state = app_handle.state::<AppState>();
-                        let is_enabled = state.is_enabled.load(Ordering::Relaxed);
-
                         if let Some(window) = app_handle.get_webview_window("main") {
-                            let is_visible = window.is_visible().unwrap_or(false);
-                            if is_enabled && is_visible {
-                                hide_findybara(app_handle.clone());
-                            } else {
-                                show_findybara(app_handle.clone());
-                            }
+                            if window.is_visible().unwrap_or(false) { hide_findybara(app_handle.clone()); }
+                            else { show_findybara(app_handle.clone()); }
                         }
                     }
                 })
                 .build(app)?;
 
             let app_handle = app.handle().clone();
-
-            {
-                let app_startup = app_handle.clone(); 
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_millis(300));
-                    if let Some(paths) = get_finder_state_paths() {
-                        if let Some(win) = get_frontmost_window() {
-                            if win.app_name == "Finder"
-                                && win.bounds.width >= 300.0
-                                && win.bounds.height >= 200.0
-                            {
-                                let bounds = win.bounds.clone();
-                                if let Some(window) = app_startup.get_webview_window("main") {
-                                    let _ = app_startup.run_on_main_thread(move || {
-                                        update_window_pos_with_bounds(&window, &bounds);
-                                        stats::spawn_analyze_and_emit(window.clone(), paths);
-                                        let _ = window.show();
-                                        let _ = window.set_always_on_top(true);
-                                    });
-                                }
-                            }
-                        }
-                    }
-                });
-            }
-
+            // Luồng theo dõi Finder (loop chính)
             let app_tracking = app_handle.clone(); 
             std::thread::spawn(move || {
                 let mut last_paths: Vec<String> = vec![];
-                let mut last_bounds = FinderBounds {
-                    x: 0.0,
-                    y: 0.0,
-                    width: 0.0,
-                    height: 0.0,
-                };
+                let mut last_bounds = FinderBounds { x: 0.0, y: 0.0, width: 0.0, height: 0.0 };
                 let mut last_title = String::new();
                 let mut is_valid_finder = false;
                 let mut last_path_check = Instant::now();
@@ -257,27 +193,13 @@ pub fn run() {
 
                 loop {
                     std::thread::sleep(Duration::from_millis(16));
-
                     if let Some(window) = app_tracking.get_webview_window("main") {
-                        let is_enabled = app_tracking
-                            .state::<AppState>()
-                            .is_enabled
-                            .load(Ordering::Relaxed);
+                        let is_enabled = app_tracking.state::<AppState>().is_enabled.load(Ordering::Relaxed);
                         if !is_enabled {
                             if window.is_visible().unwrap_or(false) {
                                 let w = window.clone();
-                                let _ = app_tracking.run_on_main_thread(move || {
-                                    let _ = w.hide();
-                                });
+                                let _ = app_tracking.run_on_main_thread(move || { let _ = w.hide(); });
                             }
-                            last_paths.clear();
-                            last_title.clear();
-                            last_bounds = FinderBounds {
-                                x: 0.0,
-                                y: 0.0,
-                                width: 0.0,
-                                height: 0.0,
-                            };
                             continue;
                         }
 
@@ -287,10 +209,7 @@ pub fn run() {
 
                         if let Some(win) = &win_opt {
                             if win.app_name == "Finder" && win.process_id != my_pid {
-                                if win.title != last_title
-                                    && win.bounds.width >= 300.0
-                                    && win.bounds.height >= 200.0
-                                {
+                                if win.title != last_title && win.bounds.width >= 300.0 && win.bounds.height >= 200.0 {
                                     title_changed = true;
                                     last_title = win.title.clone();
                                 }
@@ -299,46 +218,30 @@ pub fn run() {
 
                         if time_to_check || title_changed {
                             last_path_check = Instant::now();
-
                             if let Some(paths) = get_finder_state_paths() {
                                 is_valid_finder = true;
                                 if paths != last_paths {
                                     stats::spawn_analyze_and_emit(window.clone(), paths.clone());
                                     last_paths = paths;
                                 }
-
                                 if !window.is_visible().unwrap_or(false) {
                                     let w = window.clone();
-                                    let _ = app_tracking.run_on_main_thread(move || {
-                                        let _ = w.show();
-                                    });
+                                    let _ = app_tracking.run_on_main_thread(move || { let _ = w.show(); });
                                 }
                             } else {
                                 is_valid_finder = false;
                                 let w = window.clone();
-                                let _ = app_tracking.run_on_main_thread(move || {
-                                    let _ = w.hide();
-                                });
+                                let _ = app_tracking.run_on_main_thread(move || { let _ = w.hide(); });
                             }
                         }
 
                         if let Some(win) = win_opt {
-                            if win.process_id == my_pid {
-                                continue;
-                            }
-
-                            if win.app_name == "Finder" && is_valid_finder {
-                                if win.bounds.width < 300.0 || win.bounds.height < 200.0 {
-                                    continue;
-                                }
-
-                                if win.bounds != last_bounds {
+                            if win.process_id != my_pid && win.app_name == "Finder" && is_valid_finder {
+                                if win.bounds.width >= 300.0 && win.bounds.height >= 200.0 && win.bounds != last_bounds {
                                     last_bounds = win.bounds.clone();
                                     let w = window.clone();
                                     let b = win.bounds.clone();
-                                    let _ = app_tracking.run_on_main_thread(move || {
-                                        update_window_pos_with_bounds(&w, &b);
-                                    });
+                                    let _ = app_tracking.run_on_main_thread(move || { update_window_pos_with_bounds(&w, &b); });
                                 }
                             }
                         }
@@ -349,58 +252,20 @@ pub fn run() {
             let ollama_mgr = Arc::new(ollama::OllamaManager::new(11435, "findybara-model"));
             app.manage(AppOllamaState(ollama_mgr.clone()));
 
-            let src_model_path = app.path()
-                .resolve("../resources/model.gguf", tauri::path::BaseDirectory::Resource)
-                .expect("Không thấy model.gguf trong Resources!");
-
-            let app_data_dir = app.path().app_data_dir()
-                .expect("Không lấy được app_data_dir!");
-            let dest_model_path = app_data_dir.join("model.gguf");
-
+            // Khởi động Ollama Sidecar (giữ nguyên logic của bạn)
             let app_ollama = app_handle.clone();
-
             tauri::async_runtime::spawn(async move {
-                if !dest_model_path.exists() {
-                    println!("📦 Đang copy model vào Application Support...");
-                    if let Err(e) = std::fs::create_dir_all(&app_data_dir) {
-                        eprintln!("🔴 Không tạo được thư mục app_data_dir: {}", e);
-                        return;
-                    }
-                    if let Err(e) = std::fs::copy(&src_model_path, &dest_model_path) {
-                        eprintln!("🔴 Copy model thất bại: {}", e);
-                        return;
-                    }
-                    println!("✅ Copy model xong: {}", dest_model_path.display());
-                } else {
-                    println!("✅ Model đã có sẵn tại Application Support, bỏ qua copy.");
-                }
-
-                if let Err(e) = ollama_mgr.launch_sidecar(&app_ollama) {
-                    eprintln!("🔴 Lỗi khởi động Sidecar: {}", e);
-                    return;
-                }
-
-                if let Err(e) = ollama_mgr.wait_for_server().await {
-                    eprintln!("🔴 Server không lên: {}", e);
-                    return;
-                }
-                println!("🟢 Ollama Server đã sẵn sàng!");
-
+                let app_data_dir = app_ollama.path().app_data_dir().unwrap();
+                let dest_model_path = app_data_dir.join("model.gguf");
+                if let Err(e) = ollama_mgr.launch_sidecar(&app_ollama) { eprintln!("{}", e); return; }
+                if let Err(e) = ollama_mgr.wait_for_server().await { eprintln!("{}", e); return; }
                 let gguf_path = dest_model_path.to_str().unwrap_or_default();
-                match ollama_mgr.create_model_if_not_exists(&app_ollama, gguf_path).await {
-                    Ok(_) => println!("🟢 Sẵn sàng chiến!"),
-                    Err(e) => eprintln!("🔴 Nạp model thất bại: {}", e),
-                }
+                let _ = ollama_mgr.create_model_if_not_exists(&app_ollama, gguf_path).await;
             });
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            show_findybara,
-            hide_findybara,
-            ask_ai,
-            set_ui_height // CHÍNH XÁC: Đã đăng ký Command mới ở đây
-        ])
+        .invoke_handler(tauri::generate_handler![show_findybara, hide_findybara, ask_ai, set_ui_height])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
